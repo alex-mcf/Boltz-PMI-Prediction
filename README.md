@@ -65,8 +65,8 @@ Example local setup:
 
 ```bash
 ### PATHS
-# Modify this to point to the local project directory
-export PROJECT_ROOT="/path/to/project/directory" # Where you cloned the github repo
+# Defaults to the directory containing this file (where you cloned the github repo)
+export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 
 # SCRATCH_ROOT is the location for outputs. If not
 # using the University of Utah HPC, this can be set
@@ -93,39 +93,42 @@ source environment_variables.sh
 
 ### Important variables
 
-- `PROJECT_ROOT` = root of the repository 
-- `SCRATCH_ROOT` = scratch space to store large boltz outputs
-- `INPUT_DIR` = folder containing input CSV files
+- `PROJECT_ROOT` = root of the repository (detected automatically)
+- `SCRATCH_ROOT` = scratch space to store large boltz outputs (**you must set this**)
 - `PROCESSED_DIR` = processed Boltz output CSV files
 - `PLOT_DIR` = where figures will be saved
+- `SOURCE_DIR` = reference CSVs for the control-data and plotting scripts
 
 ---
 
 ## Step 3: Customize Slurm Submission
 
-Open: 
-```bash
-dynamic_array_worker.sh
-```
+All Slurm and Boltz settings live in the `SLURM SETTINGS` and `BOLTZ SETTINGS` sections of `environment_variables.sh`. You don't need to edit the Slurm scripts.
 
-Replace "# YOUR EMAIL HERE" with your email to receive job notifications
-
-Open: 
-```bash
-submit_dynamic_array.sh
-```
-
-Replace lines 76-93 with job submission details specific to your account. Replace "# YOUR EMAIL HERE". The default job submission is set up for a user with access to the RAI cluster.
+- `SLURM_MAIL_USER`: your email for job notifications (leave blank for none)
+- `SLURM_ACCOUNT`, `SLURM_PARTITION`, `SLURM_QOS`, `SLURM_CLUSTER`, `SLURM_GRES`: your allocation. The defaults target the RAI partition on granite.
+- `SLURM_MINUTES_PER_YAML`: walltime budget per prediction. Each array task's time limit is this multiplied by the number of YAMLs in the task (minimum 1 hour).
+- `BOLTZ_MAX_MSA_SEQS`: leave blank for the Boltz default, or lower it for faster runs. It applies to every task, so results stay comparable across a run.
 
 ## Step 4: Run the pipeline
 
 # Run the pipeline:
 ```bash
-bash run_pipeline.sh --protein_csv <protein file> --ligand_csv <ligand file> [--proteome] [--dry-run]
+bash run_pipeline.sh --ligand_csv <ligand file> (--protein_csv <protein file> | --proteome) [--job_name <name>] [--yaml_per_job <n>] [--smiles_txt <file>] [--dry-run]
 ```
 
-- `--proteome`: download proteome if no protein file is given
+- `--proteome`: download the reviewed human proteome (UniProt UP000005640) instead of supplying a protein file
+- `--job_name`: name shared by the YAML folder, output folder, and logs (defaults to `run_<timestamp>`)
+- `--yaml_per_job`: predictions per array task. Values above 1 load the Boltz model once per task instead of once per prediction, which is much faster for large runs. Batching is turned on automatically when a run would need more than 1000 array tasks.
 - `--dry-run`: run without submitting jobs
+
+Paths can be relative to your current directory, and the script can be run from any directory.
+
+To retry failed or timed-out predictions, resubmit the same job name. Only YAMLs without a finished prediction are submitted:
+
+```bash
+bash slurm_scripts/submit_dynamic_array.sh <job_name> [yaml_per_job]
+```
 
 The protein file may be in CSV or FASTA format. The ligand file must be in CSV format. 
 
@@ -206,5 +209,6 @@ Missing files are skipped. With --verbose, the script reports the number of miss
 ## Notes
 - Full Boltz job submission requires the HPC/Slurm environment.
 - Local testing is mainly for validating paths, generating YAMLs, and creating figures.
-- Folder names are expected to follow Boltz naming convention `boltz_results_{protein}__{ligand}`.
-- Folders that do not contain both required JSON files are skipped.
+- Predictions are found at `boltz_results_*/predictions/{protein}__{ligand}/`. This covers both single-YAML tasks (`boltz_results_{protein}__{ligand}`) and batched tasks (`boltz_results_batch_<job>_<task>`).
+- Predictions that do not contain both required JSON files are skipped. If a YAML was predicted more than once, only the first complete prediction is kept.
+- Nested fields (`chains_ptm`, `pair_chains_iptm`) are written as JSON strings; read them with `json.loads`.

@@ -1,94 +1,69 @@
-import os
 import shutil
 import argparse
 from pathlib import Path
 
-YAML_DIR = Path(os.environ["YAML_DIR"])
-OUTPUT_DIR = Path(os.environ["OUTPUT_DIR"])
-YAML_LIST_DIR = Path(os.environ["YAML_LIST_DIR"])
+from boltz_outputs import (
+    iter_prediction_folders,
+    iter_results_folders_without_predictions,
+    prediction_successful,
+    require_env_path,
+)
 
-def get_list_finished_yaml_files(output_folder: Path):
-    # Look in output directory for YAML files with completed predictions
-    # Return list of finished YAML files and list of unfinished YAML files
-    
-    finished_yaml_files = []
+YAML_DIR = require_env_path("YAML_DIR")
+OUTPUT_DIR = require_env_path("OUTPUT_DIR")
+YAML_LIST_DIR = require_env_path("YAML_LIST_DIR")
 
-    for yaml_folder in output_folder.iterdir():
-        name = yaml_folder.name.split("boltz_results_")[-1]
-        pred_folder = yaml_folder / "predictions" / name
-        yaml_file_name = f"{name}.yaml"
-
-        yaml_file_path = YAML_DIR / output_folder.name / yaml_file_name
-
-        if prediction_successful(pred_folder):
-            finished_yaml_files.append(yaml_file_path)
-
-    return finished_yaml_files
-
-
-def prediction_successful(pred_folder: Path):
-    # Check if prediction folder contains confidence and affinity files
-
-    # pred_folder should be in the form:
-    # .../boltz_results_{job_name}/predictions/{job_name}/
-
-    confidence_file = pred_folder / f"confidence_{pred_folder.name}_model_0.json"
-    affinity_file = pred_folder / f"affinity_{pred_folder.name}.json"
-
-    if not confidence_file.exists() or not affinity_file.exists():
-        return False
-    else:
-        return True
+def get_finished_stems(output_folder: Path) -> set[str]:
+    # Look in output directory for YAML files with completed predictions.
+    # Returns the set of YAML stems whose confidence and affinity files exist.
+    return {
+        pred_folder.name
+        for pred_folder in iter_prediction_folders(output_folder)
+        if prediction_successful(pred_folder)
+    }
 
 
 def process_output_folder(output_folder: Path, verbose: bool = False):
-    # Get list of finished YAML files
-
     folder_name = output_folder.name
 
     if not output_folder.exists():
         raise FileNotFoundError(f"Error: Output folder '{folder_name}' does not exist.")
-        
+
     if not output_folder.is_dir():
         raise NotADirectoryError(f"Error: Output folder '{folder_name}' is not a valid directory.")
 
-    finished_yaml_files = get_list_finished_yaml_files(output_folder)
+    finished_stems = get_finished_stems(output_folder)
 
     job_name = folder_name.split("boltz_results_")[-1]
     input_yaml_files = get_input_yaml_files(job_name)
+    unfinished_yaml_files = [f for f in input_yaml_files if f.stem not in finished_stems]
 
     if verbose:
-        n_finished = len(finished_yaml_files)
         n_total = len(input_yaml_files)
-        
+        n_finished = n_total - len(unfinished_yaml_files)
+        percentage = n_finished / n_total * 100 if n_total else 0.0
+
         report = f"Prediction Status {folder_name}:"
         report += f"\n\tFinished: {n_finished}"
         report += f"\tUnfinished: {n_total - n_finished}"
         report += f"\tTotal: {n_total}"
-        report += f"\tPercentage: {n_finished / n_total * 100:.2f}%"
+        report += f"\tPercentage: {percentage:.2f}%"
         print(report)
 
-    return finished_yaml_files, input_yaml_files
+    return unfinished_yaml_files, input_yaml_files
 
 
-def create_yaml_list(finished_yaml_files: list, input_yaml_files: list, output_folder_name: str):
-    # Make a list of YAML files which have not been successfully processed by Boltz
-    
-    if len(finished_yaml_files) == len(input_yaml_files):
-        print(f"All YAML files in {output_folder_name} have been processed successfully. No list will be created.")
-        return
+def create_yaml_list(unfinished_yaml_files: list, input_yaml_files: list, output_folder_name: str):
+    # Write the list of YAML files which have not been successfully processed by Boltz.
+    # The file is always (re)written, even when empty, so a stale list from a
+    # previous submission is never resubmitted.
+    YAML_LIST_DIR.mkdir(parents=True, exist_ok=True)
+    yaml_list_location = YAML_LIST_DIR / f"yaml_list_{output_folder_name}.txt"
 
-    if len(finished_yaml_files) == 0:
+    if not unfinished_yaml_files:
+        print(f"All YAML files in {output_folder_name} have been processed successfully.")
+    elif len(unfinished_yaml_files) == len(input_yaml_files):
         print(f"No YAML files in {output_folder_name} have been processed successfully. List of all input YAML files will be used.")
-    
-    list_file_name = f"yaml_list_{output_folder_name}.txt"
-    yaml_list_location = YAML_LIST_DIR / list_file_name
-
-    unfinished_yaml_files = []
-
-    for yaml_file in input_yaml_files:
-        if yaml_file not in finished_yaml_files:
-            unfinished_yaml_files.append(yaml_file)
 
     with open(yaml_list_location, "w") as f:
         for yaml_file in unfinished_yaml_files:
@@ -97,34 +72,26 @@ def create_yaml_list(finished_yaml_files: list, input_yaml_files: list, output_f
 
 def get_input_yaml_files(input_folder: str):
     input_folder_path = YAML_DIR / input_folder
-    yaml_files = []
 
-    for file in input_folder_path.iterdir():
-        if file.is_file() and file.suffix == ".yaml":
-            yaml_files.append(file)
+    if not input_folder_path.is_dir():
+        raise FileNotFoundError(f"Error: YAML folder '{input_folder_path}' does not exist.")
 
-    return yaml_files
+    # Sorted so array task indices map to the same YAMLs on every run
+    return sorted(
+        file for file in input_folder_path.iterdir()
+        if file.is_file() and file.suffix == ".yaml"
+    )
 
 
 def remove_unfinished_output_folders(output_folder: Path, dry_run: bool = False, verbose: bool = False):
-    partially_completed = []
+    # Do not run this while jobs for this folder are still in the queue:
+    # in-progress predictions look identical to failed ones.
+    partially_completed = list(iter_results_folders_without_predictions(output_folder))
 
-    for boltz_results_folder in output_folder.iterdir():
-        if not boltz_results_folder.is_dir():
-            continue
-        if not boltz_results_folder.name.startswith("boltz_results_"):
-            continue
+    if not dry_run:
+        for folder in partially_completed:
+            shutil.rmtree(folder)
 
-        prediction_name = boltz_results_folder.name.split("boltz_results_")[-1]
-
-        pred_folder = boltz_results_folder / "predictions" / prediction_name
-
-        if not prediction_successful(pred_folder):
-            partially_completed.append(boltz_results_folder)            
-            if not dry_run:
-                shutil.rmtree(boltz_results_folder)
-
-        
     if verbose and partially_completed:
         num_partially_completed = len(partially_completed)
         print(f"{num_partially_completed} partially completed predictions in {output_folder.name}:")
@@ -142,9 +109,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--output_folder", type=str, nargs="+")
     ap.add_argument("--process_all", action="store_true")
-    # ap.add_argument("--process_all", action="store_true", default=True)
     ap.add_argument("--create_list", action="store_true", help="Create list of unfinished YAML files for supplemental predictions")
-    # ap.add_argument("--create_list", action="store_true", default=True)
     ap.add_argument("--remove_unfinished", action="store_true", help="Remove output folders without successful predictions")
     ap.add_argument("--dry_run", action="store_true")
     ap.add_argument("--verbose", action="store_true")
@@ -158,7 +123,7 @@ def main():
 
     if args.process_all:
         print("Processing all output folders...")
-        for folder_path in OUTPUT_DIR.iterdir():
+        for folder_path in sorted(OUTPUT_DIR.iterdir()):
             if folder_path.is_dir():
                 folders.append(folder_path)
     elif args.output_folder:
@@ -168,11 +133,11 @@ def main():
                 folders.append(folder_path)
             else:
                 print(f"Warning: Output folder '{folder_name}' is not a valid directory and will be skipped.")
-        
+
     for folder_path in folders:
-        finished_yaml_files, input_yaml_files = process_output_folder(folder_path, verbose=args.verbose)
+        unfinished_yaml_files, input_yaml_files = process_output_folder(folder_path, verbose=args.verbose)
         if args.create_list:
-            create_yaml_list(finished_yaml_files, input_yaml_files, folder_path.name)
+            create_yaml_list(unfinished_yaml_files, input_yaml_files, folder_path.name)
         if args.remove_unfinished:
             remove_unfinished_output_folders(folder_path, dry_run=args.dry_run, verbose=args.verbose)
 

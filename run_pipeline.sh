@@ -9,39 +9,63 @@ fi
 # and submits the jobs to the University of Utah HPC.
 
 # Run the pipeline:
-# bash run_pipeline.sh --protein_csv <protein file> --ligand_csv <ligand file> [--proteome] [--dry-run]
+# bash run_pipeline.sh --ligand_csv <ligand file> (--protein_csv <protein file> | --proteome)
+#                      [--job_name <name>] [--yaml_per_job <n>] [--smiles_txt <file>] [--dry-run]
 
-# --proteome: download proteome if no protein file is given
+# --proteome: download the human proteome instead of supplying a protein file
 # --dry-run: run without submitting jobs
 
 echo "Starting pipeline..."
 
-# Load environment variables - MAKE SURE YOU CHANGED THEM TO YOUR LOCAL VARIABLES in capstone_path_env.sh
-ENV_FILE="environment_variables.sh"
+# Resolve the repository root so the script can be run from any directory
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Load environment variables - MAKE SURE YOU CHANGED THEM TO YOUR LOCAL VARIABLES in environment_variables.sh
+ENV_FILE="$REPO_ROOT/environment_variables.sh"
 if [ -f "$ENV_FILE" ]; then
     . "$ENV_FILE"
 fi
+
+for var in PROJECT_ROOT YAML_DIR MSA_BASE_DIR; do
+    if [ -z "${!var:-}" ]; then
+        echo "ERROR: $var is not set. Edit $ENV_FILE first." >&2
+        exit 1
+    fi
+done
+
+# Convert a user-supplied path to an absolute path (relative to the caller's directory)
+abspath() {
+    case "$1" in
+        /*) echo "$1" ;;
+        *) echo "$PWD/$1" ;;
+    esac
+}
 
 SMILES_TXT=""
 PROTEIN_CSV=""
 LIGAND_CSV=""
 USE_PROTEOME=0
 JOB_NAME=""
+YAML_PER_JOB=1
 
 DRY_RUN=0
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --protein_csv)
-            PROTEIN_CSV="$2"
+            PROTEIN_CSV="$(abspath "$2")"
             shift 2
             ;;
         --ligand_csv)
-            LIGAND_CSV="$2"
+            LIGAND_CSV="$(abspath "$2")"
             shift 2
             ;;
         --job_name)
             JOB_NAME="$2"
+            shift 2
+            ;;
+        --yaml_per_job)
+            YAML_PER_JOB="$2"
             shift 2
             ;;
         --proteome)
@@ -49,7 +73,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         --smiles_txt)
-            SMILES_TXT="$2"
+            SMILES_TXT="$(abspath "$2")"
             shift 2
             ;;
         --dry-run)
@@ -64,14 +88,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate input arguments
+if [[ -z "$LIGAND_CSV" ]]; then
+    echo "ERROR: You must provide --ligand_csv"
+    exit 1
+fi
+
 if [[ "$USE_PROTEOME" -eq 1 ]]; then
     echo "Running in proteome mode (auto download + convert)."
 else
-    if [[ -z "$PROTEIN_CSV" || -z "$LIGAND_CSV" ]]; then
-        echo "ERROR: You must provide --protein_csv and --ligand_csv OR use --proteome"
+    if [[ -z "$PROTEIN_CSV" ]]; then
+        echo "ERROR: You must provide --protein_csv OR use --proteome"
         exit 1
     fi
     echo "Running in manual CSV mode."
+fi
+
+# The job name ties the YAML folder, output folder, and logs together,
+# so pick one here if none was given.
+if [[ -z "$JOB_NAME" ]]; then
+    JOB_NAME="run_$(date +%Y%m%d_%H%M%S)"
+    echo "No --job_name given. Using $JOB_NAME"
 fi
 
 # Ensure directories exist
@@ -79,20 +115,11 @@ mkdir -p "$YAML_DIR"
 
 # Step 0: Check ligand CSV
 echo "Checking ligand CSV..."
-if [[ -n "$LIGAND_CSV" ]]; then
-    if [[ ! -f "$LIGAND_CSV" ]]; then
-        echo "ERROR: Ligand CSV not found at $LIGAND_CSV"
-        exit 1
-    fi
-    echo "Using ligand CSV: $LIGAND_CSV"
-else
-    if ! ls "$LIGAND_DIR"/*.csv >/dev/null 2>&1; then
-        echo "ERROR: No CSV file found in $LIGAND_DIR"
-        exit 1
-    fi
-    echo "Using ligand CSVs in directory: $LIGAND_DIR"
+if [[ ! -f "$LIGAND_CSV" ]]; then
+    echo "ERROR: Ligand CSV not found at $LIGAND_CSV"
+    exit 1
 fi
-echo "Ligand CSV found."
+echo "Using ligand CSV: $LIGAND_CSV"
 
 # Step 1: Check/convert protein input
 if [[ "$USE_PROTEOME" -eq 0 ]]; then
@@ -104,7 +131,8 @@ if [[ "$USE_PROTEOME" -eq 0 ]]; then
     fi
 
     # Determine whether the protein input is FASTA or CSV
-    case "${PROTEIN_CSV,,}" in
+    # (tr instead of ${var,,} so this also runs on macOS bash 3.2)
+    case "$(echo "$PROTEIN_CSV" | tr '[:upper:]' '[:lower:]')" in
         *.fasta|*.fa|*.faa)
             echo "Protein input detected as FASTA."
 
@@ -112,7 +140,7 @@ if [[ "$USE_PROTEOME" -eq 0 ]]; then
 
             if [[ ! -f "$CSV_FILE" ]]; then
                 echo "Converting FASTA → CSV..."
-                python scripts/proteome_fasta_to_csv.py \
+                python "$REPO_ROOT/scripts/convert_fasta_to_csv.py" \
                     --input "$PROTEIN_CSV" \
                     --output "$CSV_FILE"
                 echo "CSV created at $CSV_FILE"
@@ -140,11 +168,15 @@ fi
 if [[ "$USE_PROTEOME" -eq 1 ]]; then
     echo "Checking protein files..."
 
+    PROTEOME_ID="${PROTEOME_ID:-UP000005640}"
+    FASTA_FILE="${PROTEOME_FASTA:-$PROJECT_ROOT/inputs/proteins/proteome_${PROTEOME_ID}.fasta}"
+    CSV_FILE="${FASTA_FILE%.*}.csv"
+
     # Download proteome FASTA if needed
-    if [[ ! -f "$FASTA_FILE" ]]; then
+    if [[ ! -s "$FASTA_FILE" ]]; then
         echo "Proteome FASTA missing. Downloading..."
-        python scripts/download_proteome_fasta.py \
-            --proteome_id UP000005640 \
+        python "$REPO_ROOT/scripts/download_proteome_fasta.py" \
+            --proteome_id "$PROTEOME_ID" \
             --output "$FASTA_FILE"
         echo "Proteome downloaded."
     else
@@ -154,7 +186,7 @@ if [[ "$USE_PROTEOME" -eq 1 ]]; then
     # Convert FASTA to CSV if needed
     if [[ ! -f "$CSV_FILE" ]]; then
         echo "Running FASTA → CSV conversion..."
-        python scripts/proteome_fasta_to_csv.py \
+        python "$REPO_ROOT/scripts/convert_fasta_to_csv.py" \
             --input "$FASTA_FILE" \
             --output "$CSV_FILE"
         echo "CSV created at $CSV_FILE"
@@ -175,17 +207,14 @@ GENERATE_ARGS=(
     --ceramide_csv "$LIGAND_CSV"
     --msa_base_dir "$MSA_BASE_DIR"
     --out_base_dir "$YAML_DIR"
+    --output_dir_name "$JOB_NAME"
 )
 
-if [[ -n "$JOB_NAME" ]]; then
-    GENERATE_ARGS+=(--output_dir_name "$JOB_NAME")
-fi
-
-if [[ -n "${SMILES_TXT:-}" ]]; then
+if [[ -n "$SMILES_TXT" ]]; then
     GENERATE_ARGS+=(--smiles_txt "$SMILES_TXT")
 fi
 
-python scripts/generate_yaml.py "${GENERATE_ARGS[@]}"
+python "$REPO_ROOT/scripts/generate_yaml.py" "${GENERATE_ARGS[@]}"
 
 echo "Step 3 complete. All YAMLs generated."
 
@@ -196,7 +225,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
     echo "Step 4 complete. No Boltz jobs were submitted."
 else
     echo "Submitting Boltz jobs..."
-    bash "$PROJECT_ROOT/slurm_scripts/submit_dynamic_array.sh" "$JOB_NAME"
+    bash "$PROJECT_ROOT/slurm_scripts/submit_dynamic_array.sh" "$JOB_NAME" "$YAML_PER_JOB"
     echo "Boltz jobs submitted for $JOB_NAME."
     echo "Step 4 complete."
 fi

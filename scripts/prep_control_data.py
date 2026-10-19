@@ -6,6 +6,8 @@ import re
 import random
 import hashlib
 
+from generate_yaml import make_yaml
+
 # script_dir = Path(__file__).parent.resolve()
 # data_dir = Path('../prep_files/output_files/')
 # yaml_dir = Path('../prep_files/boltz_ready/')
@@ -103,7 +105,7 @@ def make_yaml_files(yaml_data, yaml_dir_name, num_files=None):
         smiles = row['SMILES']
         ligand_id = row['ligand_id']
 
-        yaml_content = make_yaml_contents(sequence, {'type': 'smiles', 'value': smiles})
+        yaml_content = make_yaml(sequence, {'type': 'smiles', 'value': smiles})
         
         yaml_file_path = yaml_dir_path / f'{pdb}{file_delim}{ligand_id}.yaml'
         with open(yaml_file_path, 'w', encoding='utf-8') as f:
@@ -111,36 +113,11 @@ def make_yaml_files(yaml_data, yaml_dir_name, num_files=None):
     print(f'Wrote {len(yaml_data)} YAML file(s) to {yaml_dir_path}')
 
 
-def make_yaml_contents(protein_seq: str, ligand: dict) -> str:
-    lines = []
-    lines.append("version: 1")
-    lines.append("sequences:")
-    lines.append("  - protein:")
-    lines.append("      id: A")
-    lines.append(f"      sequence: {protein_seq}")
-    lines.append("  - ligand:")
-    lines.append("      id: B")
-
-    if ligand["type"] == "ccd":
-        lines.append(f"      ccd: {ligand['value']}")
-    else:
-        v = ligand["value"].replace("'", "''")
-        lines.append(f"      smiles: '{v}'")
-
-    lines.append("properties:")
-    lines.append("  - affinity:")
-    lines.append("      binder: B")  # must match ligand id
-
-    return "\n".join(lines) + "\n"
-
-
 def main():
     output_csv_name = 'control_proteins.csv'
 
     if not (OUTPUT_DIR / output_csv_name).exists():
         make_control_protein_ligand_csv(output_csv_name)
-
-    make_control_protein_ligand_csv(output_csv_name)
 
     yaml_data = read_yaml_data(OUTPUT_DIR / output_csv_name)
     print(f'Read {len(yaml_data)} rows from {output_csv_name}')

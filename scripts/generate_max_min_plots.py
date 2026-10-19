@@ -1,11 +1,12 @@
 import argparse
+import os
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 
-PROJECT_ROOT = Path("/uufs/chpc.utah.edu/common/home/u6073676/Capstone/BIO-465-Capstone-Project")
-PROTEOME_FILE = PROJECT_ROOT / "prep_files" / "output_files" / "proteome.csv"
-OUTPUT_BASE = PROJECT_ROOT / "processed_outputs" / "min_max"
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", Path(__file__).resolve().parent.parent))
+PROCESSED_DIR = Path(os.environ.get("PROCESSED_DIR", PROJECT_ROOT / "processed_outputs"))
+OUTPUT_BASE = Path(os.environ.get("PLOT_DIR", PROJECT_ROOT / "plots")) / "min_max"
 
 
 def make_output_folder(csv_path):
@@ -16,9 +17,11 @@ def make_output_folder(csv_path):
 
 
 def add_protein_names(data, proteome_file):
-    proteome_data = pd.read_csv(proteome_file)
+    proteome_data = pd.read_csv(proteome_file, usecols=["accession", "protein_name"])
+    # Duplicate accessions would duplicate prediction rows in the merge
+    proteome_data = proteome_data.drop_duplicates(subset="accession")
     data = data.merge(
-        proteome_data[["accession", "protein_name"]],
+        proteome_data,
         left_on="protein",
         right_on="accession",
         how="left"
@@ -102,16 +105,12 @@ def resolve_csv_path(csv_arg):
     if csv_path.exists():
         return csv_path
 
-    candidate1 = PROJECT_ROOT / "processed_outputs" / csv_arg
-    if candidate1.exists():
-        return candidate1
-
-    candidate2 = PROJECT_ROOT / "processed_data" / csv_arg
-    if candidate2.exists():
-        return candidate2
+    candidate = PROCESSED_DIR / csv_arg
+    if candidate.exists():
+        return candidate
 
     raise FileNotFoundError(
-        f"Could not find CSV file '{csv_arg}' in current path, processed_outputs, or processed_data."
+        f"Could not find CSV file '{csv_arg}' in current path or {PROCESSED_DIR}."
     )
 
 
@@ -119,47 +118,43 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", type=str, required=True, help="CSV filename or full path")
     ap.add_argument("--top_x", type=int, default=10, help="Number of strongest/weakest proteins to save")
+    ap.add_argument("--proteome_csv", type=str, default=None,
+                    help="CSV with 'accession' and 'protein_name' columns (e.g. the protein input CSV) to label proteins")
+    ap.add_argument("--ligands", type=str, nargs="+", default=None,
+                    help="Ligand IDs to plot (default: every ligand in the CSV)")
     args = ap.parse_args()
 
     protein_field = "protein_name"
     confidence_var = "ligand_iptm"
     affinity_var = "micromolar_affinity_pred_value"
 
-    c16_ligand = "CER_d18_1_16_0_C16"
-    c16dihydro_ligand = "CER_d18_0_16_0_C16"
-
     csv_path = resolve_csv_path(args.csv)
     output_folder = make_output_folder(csv_path)
 
     data = pd.read_csv(csv_path)
 
-    print(f"Using proteome file: {PROTEOME_FILE}")
-    data = add_protein_names(data, PROTEOME_FILE)
+    if args.proteome_csv:
+        print(f"Using proteome file: {args.proteome_csv}")
+        data = add_protein_names(data, args.proteome_csv)
+    else:
+        data[protein_field] = ""
 
     print(f"Data loaded from {csv_path}")
     print(f"Saving outputs to {output_folder}")
 
-    process_ligand(
-        data,
-        c16_ligand,
-        "c16",
-        protein_field,
-        confidence_var,
-        affinity_var,
-        output_folder,
-        top_x=args.top_x
-    )
+    ligands = args.ligands or sorted(data["ligand"].dropna().unique())
 
-    process_ligand(
-        data,
-        c16dihydro_ligand,
-        "c16dihydro",
-        protein_field,
-        confidence_var,
-        affinity_var,
-        output_folder,
-        top_x=args.top_x
-    )
+    for ligand in ligands:
+        process_ligand(
+            data,
+            ligand,
+            ligand,
+            protein_field,
+            confidence_var,
+            affinity_var,
+            output_folder,
+            top_x=args.top_x
+        )
 
     print(f"\nDone. Outputs saved to {output_folder}")
 

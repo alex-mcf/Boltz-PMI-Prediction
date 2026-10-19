@@ -1,3 +1,4 @@
+"""Stage 1: draw a reproducible random subset of a protein CSV (e.g. a background set)."""
 import csv
 import random
 from pathlib import Path
@@ -13,7 +14,7 @@ def read_csv_rows(path: Path):
     return rows, fieldnames
 
 
-def main():
+def main(argv=None):
 
     parser = argparse.ArgumentParser(description="Generate random subset of proteome CSV")
     parser.add_argument("--proteome_csv", required=True, help="Input proteome CSV file path")
@@ -21,7 +22,7 @@ def main():
     parser.add_argument("--n_random", type=int, default=2000, help="Number of random rows to sample")
     parser.add_argument("--random_seed", type=int, default=42, help="Random seed for reproducibility")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     random.seed(args.random_seed)       
 

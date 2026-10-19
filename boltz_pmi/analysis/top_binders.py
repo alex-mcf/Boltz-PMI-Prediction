@@ -1,17 +1,15 @@
+"""Stage 5: per-ligand affinity vs. confidence scatter and strongest/weakest binder lists."""
 import argparse
-import os
 import matplotlib.pyplot as plt
 import pandas as pd
 from pathlib import Path
 
-PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", Path(__file__).resolve().parent.parent))
-PROCESSED_DIR = Path(os.environ.get("PROCESSED_DIR", PROJECT_ROOT / "processed_outputs"))
-OUTPUT_BASE = Path(os.environ.get("PLOT_DIR", PROJECT_ROOT / "plots")) / "min_max"
+from boltz_pmi import config
 
 
 def make_output_folder(csv_path):
     csv_stem = Path(csv_path).stem
-    out_folder = OUTPUT_BASE / csv_stem
+    out_folder = config.path("PLOT_DIR") / "min_max" / csv_stem
     out_folder.mkdir(parents=True, exist_ok=True)
     return out_folder
 
@@ -105,16 +103,17 @@ def resolve_csv_path(csv_arg):
     if csv_path.exists():
         return csv_path
 
-    candidate = PROCESSED_DIR / csv_arg
+    processed_dir = config.path("PROCESSED_DIR")
+    candidate = processed_dir / csv_arg
     if candidate.exists():
         return candidate
 
     raise FileNotFoundError(
-        f"Could not find CSV file '{csv_arg}' in current path or {PROCESSED_DIR}."
+        f"Could not find CSV file '{csv_arg}' in current path or {processed_dir}."
     )
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--csv", type=str, required=True, help="CSV filename or full path")
     ap.add_argument("--top_x", type=int, default=10, help="Number of strongest/weakest proteins to save")
@@ -122,7 +121,7 @@ def main():
                     help="CSV with 'accession' and 'protein_name' columns (e.g. the protein input CSV) to label proteins")
     ap.add_argument("--ligands", type=str, nargs="+", default=None,
                     help="Ligand IDs to plot (default: every ligand in the CSV)")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     protein_field = "protein_name"
     confidence_var = "ligand_iptm"

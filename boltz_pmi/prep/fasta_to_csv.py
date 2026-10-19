@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+"""Stage 1: convert a UniProt FASTA into the pipeline's protein CSV format."""
 import csv
 import re
 from pathlib import Path
@@ -80,13 +80,13 @@ def fasta_to_csv(fasta_path: Path, csv_path: Path, limit: int = 0) -> int:
     return rows_written
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Convert proteome FASTA to CSV")
     parser.add_argument("--input", required=True, help="Input FASTA file")
     parser.add_argument("--output", required=True, help="Output CSV file")
     parser.add_argument("--limit", type=int, default=0, help="Limit number of proteins (0 = all)")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     fasta_path = Path(args.input)
     csv_path = Path(args.output)

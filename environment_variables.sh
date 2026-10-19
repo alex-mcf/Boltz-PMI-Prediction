@@ -12,19 +12,22 @@ export PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # SCRATCH_ROOT is the location for outputs. If not
 # using the University of Utah HPC, this can be set
 # to the PROJECT_ROOT or another local directory
-export SCRATCH_ROOT="/path/to/scratch/space"
+export SCRATCH_ROOT="${SCRATCH_ROOT:-/path/to/scratch/space}"
+
+# Makes `python -m boltz_pmi <command>` work from any directory
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 export SLURM_SCRIPT_DIR="$PROJECT_ROOT/slurm_scripts"
-export SCRIPT_DIR="$PROJECT_ROOT/scripts"
 export LOG_DIR="$PROJECT_ROOT/logs"
-export YAML_LIST_DIR="$PROJECT_ROOT/slurm_scripts/yaml_lists"
+export INPUT_DIR="$PROJECT_ROOT/inputs"
 export PROCESSED_DIR="$PROJECT_ROOT/processed_outputs"
 export PLOT_DIR="$PROJECT_ROOT/plots"
-export SOURCE_DIR="$PROJECT_ROOT/inputs/proteins" # Reference CSVs used by prep_control_data.py and the plotting scripts
+export SOURCE_DIR="$PROJECT_ROOT/inputs/proteins" # Reference CSVs used by the control-set and boxplots commands
 
 
 export OUTPUT_DIR="$SCRATCH_ROOT/boltz_results"
 export YAML_DIR="$SCRATCH_ROOT/yaml"
+export YAML_LIST_DIR="$SCRATCH_ROOT/yaml_lists" # Per-job lists of YAMLs still to run, rebuilt on every submission
 export MSA_BASE_DIR="$SCRATCH_ROOT/msa_per_protein/proteome" # Use this if you have downloaded local MSA files
 
 ### SLURM SETTINGS

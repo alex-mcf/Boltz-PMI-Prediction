@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+"""Stage 1: download a reviewed UniProt proteome as FASTA."""
 from pathlib import Path
 import requests
 import argparse
@@ -27,12 +27,12 @@ def download_proteome_fasta(proteome_id: str, out_path: Path) -> None:
     tmp_path.rename(out_path)
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description="Download UniProt proteome FASTA")
     parser.add_argument("--proteome_id", required=True, help="UniProt proteome ID (e.g., UP000005640)")
     parser.add_argument("--output", required=True, help="Output FASTA file path")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     proteome_id = args.proteome_id
     fasta_path = Path(args.output)

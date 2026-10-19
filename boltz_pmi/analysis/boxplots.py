@@ -1,4 +1,4 @@
-import os
+"""Stage 5: compare predicted affinity for target vs. random (background) proteins."""
 import csv
 import argparse
 import matplotlib.pyplot as plt
@@ -8,16 +8,12 @@ import seaborn as sns
 from scipy import stats
 from pathlib import Path
 
-# Environment folders
-PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", Path(__file__).resolve().parent.parent))
-PROCESSED_DIR = Path(os.environ.get("PROCESSED_DIR", PROJECT_ROOT / "processed_outputs"))
-PLOT_DIR = Path(os.environ.get("PLOT_DIR", PROJECT_ROOT / "plots"))
-SOURCE_DIR = Path(os.environ.get("SOURCE_DIR", PROJECT_ROOT / "inputs" / "proteins"))
+from boltz_pmi import config
 
 def load_csv(csv_file: str):
     csv_path = Path(csv_file)
     if not csv_path.exists():
-        csv_path = PROCESSED_DIR / csv_file
+        csv_path = config.path("PROCESSED_DIR") / csv_file
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV file not found: {csv_file}")
     return pd.read_csv(csv_path)
@@ -26,7 +22,7 @@ def load_protein_list(file_name: str):
     proteins = set()
     csv_path = Path(file_name)
     if not csv_path.exists():
-        csv_path = SOURCE_DIR / file_name
+        csv_path = config.path("SOURCE_DIR") / file_name
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -64,12 +60,13 @@ def create_box_plot(df: pd.DataFrame, plot_name: str, plot_title: str, affinity_
     if show_stats and p_value is not None:
         plt.text(0.05, 0.95, f"P-value={p_value:.5f}", transform=plt.gca().transAxes, va="top", ha="left", fontsize=12, bbox=dict(facecolor='white', alpha=0.8))
 
-    PLOT_DIR.mkdir(parents=True, exist_ok=True)
-    plt.savefig(PLOT_DIR / plot_name, bbox_inches='tight')
-    print(f"Box plot saved: {PLOT_DIR / plot_name}")
+    plot_dir = config.path("PLOT_DIR")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    plt.savefig(plot_dir / plot_name, bbox_inches='tight')
+    print(f"Box plot saved: {plot_dir / plot_name}")
     plt.close()
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--target_csvs", type=str, nargs='+', required=True, help="CSV(s) with target proteins")
     parser.add_argument("--random_csvs", type=str, nargs='+', required=True, help="CSV(s) with random proteins")
@@ -77,7 +74,7 @@ def main():
     parser.add_argument("--by_ligand", action="store_true", help="Create separate boxplots per ligand")
     parser.add_argument("--affinity_col", type=str, default="neg_log_molar_affinity_pred_value")
     parser.add_argument("--show_stats", action="store_true", help="Compute and display T-test")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # Load proteins
     target_proteins = set()

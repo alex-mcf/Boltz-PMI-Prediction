@@ -1,40 +1,32 @@
-import os
 import argparse
 import json
 import csv
-import numpy as np
+import math
 from pathlib import Path
 
-# PROJECT_ROOT = Path(os.environ["PROJECT_ROOT"])
-# SCRIPT_DIR = Path(os.environ["SCRIPT_DIR"])
-# YAML_DIR = Path(os.environ["YAML_DIR"])
-OUTPUT_DIR = Path(os.environ["OUTPUT_DIR"])
-PROCESSED_DIR = Path(os.environ["PROCESSED_DIR"])
+from boltz_outputs import (
+    iter_prediction_folders,
+    prediction_files,
+    require_env_path,
+    split_stem,
+)
+
+OUTPUT_DIR = require_env_path("OUTPUT_DIR")
+PROCESSED_DIR = require_env_path("PROCESSED_DIR")
 
 def get_predictions_from_output(output_folder: Path, verbose: bool = False):
     confidence_list = []
+    seen_stems = set()
     num_missing_confidence_files = 0
     num_missing_affinity_files = 0
+    num_duplicates = 0
 
-    # Each subfolder corresponds to the prediction
-    # associated with a single YAML file.
-    # The name follows the pattern:
-    # boltz_results_{protein_name}__{ligand_name}
-    for subfolder in output_folder.iterdir():
-        if not subfolder.is_dir():
-            continue
-
-        stem = subfolder.name.split("boltz_results_")[1]
-
-        if "__" in stem:
-            protein_name = stem.split("__")[0] 
-            ligand_name = stem.split("__")[1]
-        else:
-            protein_name, ligand_name = stem, "UNKNOWN"
-
-        pred_folder = subfolder / "predictions" / stem
-        confidence_file = pred_folder / f"confidence_{stem}_model_0.json"
-        affinity_file = pred_folder / f"affinity_{stem}.json"
+    # Each predictions/<stem>/ folder corresponds to a single YAML file,
+    # named {protein}__{ligand}. See boltz_outputs.py for the layout.
+    for pred_folder in iter_prediction_folders(output_folder):
+        stem = pred_folder.name
+        protein_name, ligand_name = split_stem(stem)
+        confidence_file, affinity_file = prediction_files(pred_folder)
 
         if not confidence_file.exists():
             if verbose:
@@ -49,6 +41,13 @@ def get_predictions_from_output(output_folder: Path, verbose: bool = False):
         if not confidence_file.exists() or not affinity_file.exists():
             continue
 
+        # A YAML that was resubmitted can have results in more than one
+        # batch folder; keep only the first complete prediction.
+        if stem in seen_stems:
+            num_duplicates += 1
+            continue
+        seen_stems.add(stem)
+
         with open(confidence_file, "r") as f:
             confidence = json.load(f)
 
@@ -62,6 +61,8 @@ def get_predictions_from_output(output_folder: Path, verbose: bool = False):
     if verbose:
         print(f"\tMissing confidence files: {num_missing_confidence_files}")
         print(f"\tMissing affinity files: {num_missing_affinity_files}")
+        if num_duplicates:
+            print(f"\tDuplicate predictions skipped: {num_duplicates}")
 
     add_additional_affinity_units(confidence_list)
 
@@ -69,36 +70,51 @@ def get_predictions_from_output(output_folder: Path, verbose: bool = False):
 
 
 def add_additional_affinity_units(confidence_list: list):
-    # Add micromolar affinity, molar affinity, and -log10(molar affinity)
+    # Add micromolar affinity, molar affinity, and -log10(molar affinity).
+    # affinity_pred_value is log10(IC50 in uM), so -log10(M) = 6 - value.
 
     for item in confidence_list:
         affinity_pred_value = item.get("affinity_pred_value")
 
-        micromolar_affinity_pred_value = 10 ** affinity_pred_value
-        molar_affinity_pred_value = micromolar_affinity_pred_value / 1e6
-        neg_log_molar_affinity_pred_value = -np.log10(molar_affinity_pred_value)
+        if affinity_pred_value is None:
+            micromolar = molar = neg_log_molar = math.nan
+        else:
+            micromolar = 10 ** affinity_pred_value
+            molar = micromolar / 1e6
+            neg_log_molar = 6 - affinity_pred_value
 
-        item["micromolar_affinity_pred_value"] = micromolar_affinity_pred_value
-        item["molar_affinity_pred_value"] = molar_affinity_pred_value
-        item["neg_log_molar_affinity_pred_value"] = neg_log_molar_affinity_pred_value
+        item["micromolar_affinity_pred_value"] = micromolar
+        item["molar_affinity_pred_value"] = molar
+        item["neg_log_molar_affinity_pred_value"] = neg_log_molar
+
+
+def to_csv_value(value):
+    # Nested fields (chains_ptm, pair_chains_iptm) are written as JSON so they
+    # can be parsed downstream with json.loads instead of Python repr strings.
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return value
 
 
 def save_data_as_csv(job_name: str, data: list):
-    if not PROCESSED_DIR.exists():
-        PROCESSED_DIR.mkdir(parents=True)
-
-    csv_file = PROCESSED_DIR / f"confidence_predictions_{job_name}.csv"
-
     if not data:
         print(f"No data for {job_name}. Skipping CSV creation.")
         return
 
-    with open(csv_file, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=data[0].keys())
-        writer.writeheader()
-        writer.writerows(data)
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
+    csv_file = PROCESSED_DIR / f"confidence_predictions_{job_name}.csv"
 
-    print(f"Saved confidence predictions to {csv_file.name}")
+    # Rows can have different keys (e.g. extra ligands add chain entries),
+    # so build the header from the union of all keys, preserving order.
+    fieldnames = list(dict.fromkeys(key for row in data for key in row))
+
+    with open(csv_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, restval="")
+        writer.writeheader()
+        for row in data:
+            writer.writerow({k: to_csv_value(v) for k, v in row.items()})
+
+    print(f"Saved {len(data)} confidence predictions to {csv_file.name}")
 
 
 def main():
@@ -108,12 +124,15 @@ def main():
     ap.add_argument("--process_all", action="store_true", help="Process all output folders in the outputs directory")
     ap.add_argument("--verbose", action="store_true")
     args = ap.parse_args()
-    
+
+    if not args.output_folder and not args.process_all:
+        ap.error("Provide --output_folder or --process_all.")
+
     folders = []
 
     if args.process_all:
         print("Processing all output folders...")
-        for folder_path in OUTPUT_DIR.iterdir():
+        for folder_path in sorted(OUTPUT_DIR.iterdir()):
             if folder_path.is_dir():
                 folders.append(folder_path)
     elif args.output_folder:
@@ -134,9 +153,9 @@ def main():
 
         if args.job_name and len(folders) == 1:
             job_name = args.job_name
-        else:            
+        else:
             job_name = folder_path.name
-        
+
         save_data_as_csv(job_name, confidence_list)
 
 

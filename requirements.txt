@@ -6,3 +6,4 @@ scipy
 gseapy
 pyrolite
 mygene
+requests

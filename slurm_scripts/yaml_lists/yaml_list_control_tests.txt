@@ -1,6 +1,0 @@
-/uufs/chpc.utah.edu/common/home/u6073680/Capstone/BIO-465-Capstone-Project/prep_files/boltz_ready/control_tests/1pmx__355283af08f28453.yaml
-/uufs/chpc.utah.edu/common/home/u6073680/Capstone/BIO-465-Capstone-Project/prep_files/boltz_ready/control_tests/3bwf__b88981fa91d64bc8.yaml
-/uufs/chpc.utah.edu/common/home/u6073680/Capstone/BIO-465-Capstone-Project/prep_files/boltz_ready/control_tests/3cst__4ca592e41d180da5.yaml
-/uufs/chpc.utah.edu/common/home/u6073680/Capstone/BIO-465-Capstone-Project/prep_files/boltz_ready/control_tests/3fxz__75e15cbea849cb40.yaml
-/uufs/chpc.utah.edu/common/home/u6073680/Capstone/BIO-465-Capstone-Project/prep_files/boltz_ready/control_tests/3fy0__b88981fa91d64bc8.yaml
-/uufs/chpc.utah.edu/common/home/u6073680/Capstone/BIO-465-Capstone-Project/prep_files/boltz_ready/control_tests/3m1j__55409ca97b057b2d.yaml

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import csv
+import os
 import random
 import re
 from datetime import datetime
@@ -62,7 +63,8 @@ def make_yaml(
     lines.append(f"      sequence: {protein_seq}")
 
     if msa_path:
-        lines.append(f"      msa: {msa_path}")
+        msa_v = msa_path.replace("'", "''")
+        lines.append(f"      msa: '{msa_v}'")
 
     lines.append("  - ligand:")
     lines.append("      id: B")
@@ -107,9 +109,23 @@ def main():
     )
 
     ap.add_argument(
+        "--max_proteins",
+        type=int,
+        default=None,
+        help="Only use the first (or, with --random, a random) N proteins.",
+    )
+
+    ap.add_argument(
+        "--max_ligands",
+        type=int,
+        default=None,
+        help="Only use the first (or, with --random, a random) N ligands.",
+    )
+
+    ap.add_argument(
         "--random",
         action="store_true",
-        help="randomly sample instead of first X/Y",
+        help="randomly sample instead of taking the first --max_proteins/--max_ligands",
     )
 
     ap.add_argument(
@@ -128,7 +144,7 @@ def main():
     ap.add_argument(
         "--out_base_dir",
         type=Path,
-        default="/scratch/rai/vast1/stewartp/boltz_project/yaml",
+        default=os.environ.get("YAML_DIR"),
         help="Where to write /<run_name>",
     )
 
@@ -147,24 +163,25 @@ def main():
 
     args = ap.parse_args()
 
+    if args.out_base_dir is None:
+        ap.error("--out_base_dir is required when YAML_DIR is not set.")
+
     # ------------------------------------------------------------
     # Resolve project paths
     # ------------------------------------------------------------
 
     PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-    # Input paths supplied on the command line are interpreted
-    # relative to the project root unless they are absolute paths.
+    # Relative input paths are resolved against the current directory
+    # first, then against the project root.
 
-    proteome_csv = args.proteome_csv
-    if not proteome_csv.is_absolute():
-        proteome_csv = PROJECT_ROOT / proteome_csv
-    proteome_csv = proteome_csv.resolve()
+    def resolve_input(path: Path) -> Path:
+        if path.is_absolute() or path.exists():
+            return path.resolve()
+        return (PROJECT_ROOT / path).resolve()
 
-    ceramides_csv = args.ceramide_csv
-    if not ceramides_csv.is_absolute():
-        ceramides_csv = PROJECT_ROOT / ceramides_csv
-    ceramides_csv = ceramides_csv.resolve()
+    proteome_csv = resolve_input(args.proteome_csv)
+    ceramides_csv = resolve_input(args.ceramide_csv)
 
     # ------------------------------------------------------------
     # Check input files
@@ -185,12 +202,7 @@ def main():
     # ------------------------------------------------------------
 
     if args.smiles_txt is not None:
-        smiles_txt = args.smiles_txt
-
-        if not smiles_txt.is_absolute():
-            smiles_txt = PROJECT_ROOT / smiles_txt
-
-        smiles_txt = smiles_txt.resolve()
+        smiles_txt = resolve_input(args.smiles_txt)
 
         if not smiles_txt.exists():
             raise FileNotFoundError(
@@ -217,8 +229,8 @@ def main():
     # Sampling
     # ------------------------------------------------------------
 
-    x_proteins = len(proteins)
-    y_ceramides = len(ceramides)
+    x_proteins = min(args.max_proteins or len(proteins), len(proteins))
+    y_ceramides = min(args.max_ligands or len(ceramides), len(ceramides))
 
     if args.random:
         rng = random.Random(args.seed)
@@ -227,6 +239,13 @@ def main():
     else:
         proteins = proteins[:x_proteins]
         ceramides = ceramides[:y_ceramides]
+
+    if not proteins or not ceramides:
+        raise ValueError(
+            "No proteins or no ligands were loaded. Protein CSVs need "
+            "'accession' and 'sequence' columns; ligand CSVs need "
+            "'ligand_id', 'type' and 'value' columns."
+        )
 
     # ------------------------------------------------------------
     # Output directory
@@ -248,9 +267,17 @@ def main():
 
     n = 0
     file_delim = "__"
+    written = {}
 
     for p in proteins:
         acc_safe = safe_name(p["accession"])
+
+        # The parser splits {protein}__{ligand} on the first delimiter
+        if file_delim in acc_safe:
+            raise ValueError(
+                f"Protein accession '{p['accession']}' contains '{file_delim}', "
+                "which is reserved as the protein/ligand separator."
+            )
 
         msa_file = msa_base / acc_safe / "msa.a3m"
         msa_exists = msa_file.exists()
@@ -264,10 +291,22 @@ def main():
 
         for c in ceramides:
             fname = (
-                f"{safe_name(p['accession'])}"
+                f"{acc_safe}"
                 f"{file_delim}"
                 f"{safe_name(c['ligand_id'])}.yaml"
             )
+
+            # Different IDs can map to the same safe name (or appear twice in
+            # the input); fail instead of silently overwriting a YAML.
+            pair = (p["accession"], c["ligand_id"])
+            if fname in written:
+                if written[fname] == pair:
+                    continue
+                raise ValueError(
+                    f"{pair} and {written[fname]} both map to {fname}. "
+                    "Rename one of the proteins or ligands."
+                )
+            written[fname] = pair
 
             (out_dir / fname).write_text(
                 make_yaml(

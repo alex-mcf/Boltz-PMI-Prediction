@@ -9,19 +9,24 @@ from scipy import stats
 from pathlib import Path
 
 # Environment folders
-PROCESSED_DIR = Path(os.environ["PROCESSED_DIR"])
-PLOT_DIR = Path(os.environ["PLOT_DIR"])
-SOURCE_DIR = Path(os.environ["SOURCE_DIR"])
+PROJECT_ROOT = Path(os.environ.get("PROJECT_ROOT", Path(__file__).resolve().parent.parent))
+PROCESSED_DIR = Path(os.environ.get("PROCESSED_DIR", PROJECT_ROOT / "processed_outputs"))
+PLOT_DIR = Path(os.environ.get("PLOT_DIR", PROJECT_ROOT / "plots"))
+SOURCE_DIR = Path(os.environ.get("SOURCE_DIR", PROJECT_ROOT / "inputs" / "proteins"))
 
 def load_csv(csv_file: str):
-    csv_path = PROCESSED_DIR / csv_file
+    csv_path = Path(csv_file)
+    if not csv_path.exists():
+        csv_path = PROCESSED_DIR / csv_file
     if not csv_path.exists():
         raise FileNotFoundError(f"CSV file not found: {csv_file}")
     return pd.read_csv(csv_path)
 
 def load_protein_list(file_name: str):
     proteins = set()
-    csv_path = SOURCE_DIR / file_name
+    csv_path = Path(file_name)
+    if not csv_path.exists():
+        csv_path = SOURCE_DIR / file_name
     with open(csv_path, "r", encoding="utf-8", newline="") as f:
         reader = csv.DictReader(f)
         for row in reader:
@@ -31,8 +36,10 @@ def load_protein_list(file_name: str):
     return proteins
 
 def categorize_proteins(df: pd.DataFrame, target_proteins: set, random_proteins: set):
-    df["protein_category"] = df["protein"].apply(
-        lambda x: "Target Proteins" if x in target_proteins else ("Random Proteins" if x in random_proteins else "Unknown Proteins")
+    df["protein_category"] = np.select(
+        [df["protein"].isin(target_proteins), df["protein"].isin(random_proteins)],
+        ["Target Proteins", "Random Proteins"],
+        default="Unknown Proteins",
     )
     return df
 
@@ -42,14 +49,14 @@ def create_box_plot(df: pd.DataFrame, plot_name: str, plot_title: str, affinity_
     target_data = df[df["protein_category"] == "Target Proteins"][affinity_col]
     random_data = df[df["protein_category"] == "Random Proteins"][affinity_col]
 
-    if show_stats:
-        t_stat, p_value = stats.ttest_ind(random_data, target_data, equal_var=False)
+    if show_stats and len(target_data) > 1 and len(random_data) > 1:
+        t_stat, p_value = stats.ttest_ind(random_data, target_data, equal_var=False, nan_policy="omit")
         print(f"T-test: t-stat={t_stat:.2f}, p-value={p_value:.5f}")
     else:
         p_value = None
 
     plt.figure(figsize=(10, 6))
-    sns.boxplot(x="protein_category", y=affinity_col, data=df, palette="Set2")
+    sns.boxplot(x="protein_category", y=affinity_col, hue="protein_category", data=df, palette="Set2", legend=False)
     plt.title(plot_title)
     plt.xlabel("Protein Category")
     plt.ylabel(f"Predicted Affinity (-log10 M)")

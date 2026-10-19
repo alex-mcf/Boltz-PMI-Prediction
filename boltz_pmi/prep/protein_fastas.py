@@ -1,19 +1,23 @@
-#!/usr/bin/env python3
+"""Stage 1 (optional): write one FASTA per protein for precomputing MSAs.
+
+The resulting MSAs are expected at MSA_BASE_DIR/<accession>/msa.a3m, which is
+where yamls.py looks for them. Proteins without one use the MSA server instead.
+"""
 import argparse
 import csv
 import re
 from pathlib import Path
 
-def safe_name(s: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]+", "_", s).strip("_")
+from boltz_pmi.naming import safe_name
 
-def main():
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description="Convert proteome CSV to one FASTA per protein.")
     ap.add_argument("--proteome_csv", type=Path, required=True,
                     help="CSV containing columns: accession, sequence (extra columns OK)")
     ap.add_argument("--out_dir", type=Path, required=True,
                     help="Output directory for per-protein FASTA files")
-    args = ap.parse_args()
+    args = ap.parse_args(argv)
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
 

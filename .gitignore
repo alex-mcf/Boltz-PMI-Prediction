@@ -29,3 +29,5 @@ slurm_scripts/yaml_lists
 scripts/yaml_list.txt
 slurm_scripts/archive
 my_environment_variables.sh
+.pytest_cache/
+__pycache__/

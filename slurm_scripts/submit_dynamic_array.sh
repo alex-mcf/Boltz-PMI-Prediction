@@ -15,7 +15,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # Check for environment variables
-for var in PROJECT_ROOT OUTPUT_DIR YAML_DIR LOG_DIR YAML_LIST_DIR SCRIPT_DIR SLURM_SCRIPT_DIR; do
+for var in PROJECT_ROOT OUTPUT_DIR YAML_DIR LOG_DIR YAML_LIST_DIR SLURM_SCRIPT_DIR; do
     if [ -z "${!var:-}" ]; then
         echo "Error: $var is not set. Environment variables are not loaded." >&2
         exit 1
@@ -43,7 +43,7 @@ mkdir -p "$OUTPUT_LOC" "$LOG_LOC" "$YAML_LIST_DIR"
 
 # Produce YAML list file (only YAMLs without a finished prediction)
 YAML_LIST="$YAML_LIST_DIR/yaml_list_$JOB_NAME.txt"
-if ! python3 "$SCRIPT_DIR/prep_yaml_lists.py" --output_folder "$JOB_NAME" --create_list; then
+if ! PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -m boltz_pmi jobs --output_folder "$JOB_NAME" --create_list --verbose; then
     echo "Error: Could not build the YAML list for $JOB_NAME" >&2
     exit 1
 fi

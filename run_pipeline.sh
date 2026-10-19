@@ -5,15 +5,24 @@ if command -v module >/dev/null 2>&1; then
     module load python
 fi
 
-# This script produces YAML files to be run by Boltz-2
-# and submits the jobs to the University of Utah HPC.
-
-# Run the pipeline:
-# bash run_pipeline.sh --ligand_csv <ligand file> (--protein_csv <protein file> | --proteome)
-#                      [--job_name <name>] [--yaml_per_job <n>] [--smiles_txt <file>] [--dry-run]
-
-# --proteome: download the human proteome instead of supplying a protein file
-# --dry-run: run without submitting jobs
+# Builds Boltz-2 YAML inputs and submits them to the University of Utah HPC.
+# Each stage is a `python -m boltz_pmi <command>`; this script chains them.
+#
+#   1. prep inputs      download-proteome / fasta-to-csv   (when needed)
+#   2. generate YAMLs   generate-yamls
+#   3. submit           slurm_scripts/submit_dynamic_array.sh  (uses `jobs` to skip finished YAMLs)
+#
+# After the jobs finish:  python -m boltz_pmi parse --output_folder <job_name>
+#
+# Usage:
+#   bash run_pipeline.sh --ligand_csv <file> (--protein_csv <file> | --proteome) [options]
+#   bash run_pipeline.sh --pairs_csv <file> [options]
+#
+# Options:
+#   --job_name <name>       Name for the YAML folder, output folder, and logs (default: run_<timestamp>)
+#   --yaml_per_job <n>      Predictions per Slurm array task (default: 1)
+#   --smiles_txt <file>     SMILES added to every complex as an extra (unscored) ligand
+#   --dry-run               Generate YAMLs without submitting jobs
 
 echo "Starting pipeline..."
 
@@ -33,6 +42,11 @@ for var in PROJECT_ROOT YAML_DIR MSA_BASE_DIR; do
     fi
 done
 
+export PYTHONPATH="$REPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+boltz_pmi() {
+    python -m boltz_pmi "$@"
+}
+
 # Convert a user-supplied path to an absolute path (relative to the caller's directory)
 abspath() {
     case "$1" in
@@ -44,6 +58,7 @@ abspath() {
 SMILES_TXT=""
 PROTEIN_CSV=""
 LIGAND_CSV=""
+PAIRS_CSV=""
 USE_PROTEOME=0
 JOB_NAME=""
 YAML_PER_JOB=1
@@ -58,6 +73,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         --ligand_csv)
             LIGAND_CSV="$(abspath "$2")"
+            shift 2
+            ;;
+        --pairs_csv)
+            PAIRS_CSV="$(abspath "$2")"
             shift 2
             ;;
         --job_name)
@@ -88,19 +107,34 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Validate input arguments
-if [[ -z "$LIGAND_CSV" ]]; then
-    echo "ERROR: You must provide --ligand_csv"
-    exit 1
-fi
-
-if [[ "$USE_PROTEOME" -eq 1 ]]; then
-    echo "Running in proteome mode (auto download + convert)."
+if [[ -n "$PAIRS_CSV" ]]; then
+    if [[ -n "$PROTEIN_CSV$LIGAND_CSV" || "$USE_PROTEOME" -eq 1 ]]; then
+        echo "ERROR: --pairs_csv cannot be combined with --protein_csv, --ligand_csv, or --proteome"
+        exit 1
+    fi
+    if [[ ! -f "$PAIRS_CSV" ]]; then
+        echo "ERROR: Pair CSV not found at $PAIRS_CSV"
+        exit 1
+    fi
+    echo "Running in pair CSV mode."
 else
-    if [[ -z "$PROTEIN_CSV" ]]; then
+    if [[ -z "$LIGAND_CSV" ]]; then
+        echo "ERROR: You must provide --ligand_csv (or --pairs_csv)"
+        exit 1
+    fi
+    if [[ ! -f "$LIGAND_CSV" ]]; then
+        echo "ERROR: Ligand CSV not found at $LIGAND_CSV"
+        exit 1
+    fi
+    if [[ "$USE_PROTEOME" -eq 1 && -n "$PROTEIN_CSV" ]]; then
+        echo "ERROR: Use either --protein_csv or --proteome, not both"
+        exit 1
+    fi
+    if [[ "$USE_PROTEOME" -eq 0 && -z "$PROTEIN_CSV" ]]; then
         echo "ERROR: You must provide --protein_csv OR use --proteome"
         exit 1
     fi
-    echo "Running in manual CSV mode."
+    echo "Using ligand CSV: $LIGAND_CSV"
 fi
 
 # The job name ties the YAML folder, output folder, and logs together,
@@ -110,122 +144,93 @@ if [[ -z "$JOB_NAME" ]]; then
     echo "No --job_name given. Using $JOB_NAME"
 fi
 
-# Ensure directories exist
-mkdir -p "$YAML_DIR"
+# ---------------------------------------------------------------------------
+# Stage 1: prepare the protein CSV
+# ---------------------------------------------------------------------------
+fasta_to_csv() {
+    local fasta="$1" csv="${1%.*}.csv"
+    if [[ ! -f "$csv" ]]; then
+        echo "Converting FASTA → CSV..." >&2
+        boltz_pmi fasta-to-csv --input "$fasta" --output "$csv" >&2
+    else
+        echo "CSV already exists at $csv. Skipping conversion." >&2
+    fi
+    echo "$csv"
+}
 
-# Step 0: Check ligand CSV
-echo "Checking ligand CSV..."
-if [[ ! -f "$LIGAND_CSV" ]]; then
-    echo "ERROR: Ligand CSV not found at $LIGAND_CSV"
-    exit 1
-fi
-echo "Using ligand CSV: $LIGAND_CSV"
+if [[ "$USE_PROTEOME" -eq 1 ]]; then
+    PROTEOME_ID="${PROTEOME_ID:-UP000005640}"
+    FASTA_FILE="${PROTEOME_FASTA:-$PROJECT_ROOT/inputs/proteins/proteome_${PROTEOME_ID}.fasta}"
 
-# Step 1: Check/convert protein input
-if [[ "$USE_PROTEOME" -eq 0 ]]; then
-    echo "Checking protein input..."
+    if [[ ! -s "$FASTA_FILE" ]]; then
+        echo "Proteome FASTA missing. Downloading..."
+        boltz_pmi download-proteome --proteome_id "$PROTEOME_ID" --output "$FASTA_FILE"
+    else
+        echo "FASTA already exists. Skipping download."
+    fi
 
+    PROTEIN_CSV="$(fasta_to_csv "$FASTA_FILE")"
+elif [[ -n "$PROTEIN_CSV" ]]; then
     if [[ ! -f "$PROTEIN_CSV" ]]; then
         echo "ERROR: Protein input not found at $PROTEIN_CSV"
         exit 1
     fi
 
-    # Determine whether the protein input is FASTA or CSV
     # (tr instead of ${var,,} so this also runs on macOS bash 3.2)
     case "$(echo "$PROTEIN_CSV" | tr '[:upper:]' '[:lower:]')" in
-        *.fasta|*.fa|*.faa)
-            echo "Protein input detected as FASTA."
-
-            CSV_FILE="${PROTEIN_CSV%.*}.csv"
-
-            if [[ ! -f "$CSV_FILE" ]]; then
-                echo "Converting FASTA → CSV..."
-                python "$REPO_ROOT/scripts/convert_fasta_to_csv.py" \
-                    --input "$PROTEIN_CSV" \
-                    --output "$CSV_FILE"
-                echo "CSV created at $CSV_FILE"
-            else
-                echo "CSV already exists at $CSV_FILE. Skipping conversion."
-            fi
-
-            PROTEIN_CSV="$CSV_FILE"
-            ;;
-
-        *.csv)
-            echo "Protein input detected as CSV."
-            ;;
-
+        *.fasta|*.fa|*.faa) PROTEIN_CSV="$(fasta_to_csv "$PROTEIN_CSV")" ;;
+        *.csv) ;;
         *)
             echo "ERROR: Protein input must be a CSV or FASTA file (.csv, .fasta, .fa, or .faa)"
             exit 1
             ;;
     esac
+fi
 
+if [[ -n "$PROTEIN_CSV" ]]; then
     echo "Using protein CSV: $PROTEIN_CSV"
 fi
 
-# Step 2: Proteome mode
-if [[ "$USE_PROTEOME" -eq 1 ]]; then
-    echo "Checking protein files..."
-
-    PROTEOME_ID="${PROTEOME_ID:-UP000005640}"
-    FASTA_FILE="${PROTEOME_FASTA:-$PROJECT_ROOT/inputs/proteins/proteome_${PROTEOME_ID}.fasta}"
-    CSV_FILE="${FASTA_FILE%.*}.csv"
-
-    # Download proteome FASTA if needed
-    if [[ ! -s "$FASTA_FILE" ]]; then
-        echo "Proteome FASTA missing. Downloading..."
-        python "$REPO_ROOT/scripts/download_proteome_fasta.py" \
-            --proteome_id "$PROTEOME_ID" \
-            --output "$FASTA_FILE"
-        echo "Proteome downloaded."
-    else
-        echo "FASTA already exists. Skipping download."
-    fi
-
-    # Convert FASTA to CSV if needed
-    if [[ ! -f "$CSV_FILE" ]]; then
-        echo "Running FASTA → CSV conversion..."
-        python "$REPO_ROOT/scripts/convert_fasta_to_csv.py" \
-            --input "$FASTA_FILE" \
-            --output "$CSV_FILE"
-        echo "CSV created at $CSV_FILE"
-    else
-        echo "CSV already exists. Skipping conversion."
-    fi
-
-    PROTEIN_CSV="$CSV_FILE"
-
-    echo "Using proteome CSV: $PROTEIN_CSV"
-fi
-
-# Step 3: Generate YAMLs
+# ---------------------------------------------------------------------------
+# Stage 2: generate YAMLs
+# ---------------------------------------------------------------------------
 echo "Generating YAML files..."
+mkdir -p "$YAML_DIR"
 
 GENERATE_ARGS=(
-    --proteome_csv "$PROTEIN_CSV"
-    --ceramide_csv "$LIGAND_CSV"
     --msa_base_dir "$MSA_BASE_DIR"
     --out_base_dir "$YAML_DIR"
     --output_dir_name "$JOB_NAME"
 )
 
+if [[ -n "$PAIRS_CSV" ]]; then
+    GENERATE_ARGS+=(--pairs_csv "$PAIRS_CSV")
+else
+    GENERATE_ARGS+=(--protein_csv "$PROTEIN_CSV" --ligand_csv "$LIGAND_CSV")
+fi
+
 if [[ -n "$SMILES_TXT" ]]; then
     GENERATE_ARGS+=(--smiles_txt "$SMILES_TXT")
 fi
 
-python "$REPO_ROOT/scripts/generate_yaml.py" "${GENERATE_ARGS[@]}"
+boltz_pmi generate-yamls "${GENERATE_ARGS[@]}"
 
-echo "Step 3 complete. All YAMLs generated."
+echo "Stage 2 complete. All YAMLs generated."
 
-# Step 4: Submit Boltz jobs
+# ---------------------------------------------------------------------------
+# Stage 3: submit Boltz jobs
+# ---------------------------------------------------------------------------
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "[DRY RUN] Skipping Boltz job submission."
     echo "[DRY RUN] Would have submitted jobs using submit_dynamic_array.sh for $JOB_NAME"
-    echo "Step 4 complete. No Boltz jobs were submitted."
 else
     echo "Submitting Boltz jobs..."
-    bash "$PROJECT_ROOT/slurm_scripts/submit_dynamic_array.sh" "$JOB_NAME" "$YAML_PER_JOB"
+    bash "$SLURM_SCRIPT_DIR/submit_dynamic_array.sh" "$JOB_NAME" "$YAML_PER_JOB"
     echo "Boltz jobs submitted for $JOB_NAME."
-    echo "Step 4 complete."
 fi
+
+echo ""
+echo "Next steps:"
+echo "  Check progress:   python -m boltz_pmi jobs --output_folder $JOB_NAME --verbose"
+echo "  Retry failures:   bash slurm_scripts/submit_dynamic_array.sh $JOB_NAME"
+echo "  Compile results:  python -m boltz_pmi parse --output_folder $JOB_NAME"
